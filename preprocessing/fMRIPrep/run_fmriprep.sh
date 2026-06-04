@@ -13,6 +13,7 @@
 # Set the subject ID in BIDS (ignoring sub- prefix)
 SUB=$1
 USE_FIELDMAPS=$3
+USE_FS_NO_RECONALL=$4
 
 # Load the version of fMRIprep to be used
 module load fmriprep/23.2.1
@@ -34,8 +35,12 @@ echo $SUB $ROOT $OUT $WORK
 
 FMRIPREP_CMD="fmriprep $ROOT $OUT participant --participant-label $SUB --nthreads 16 -w $WORK --output-spaces T1w MNI152Lin anat MNI152NLin2009cAsym --fs-license-file /gpfs/milgram/project/turk-browne/aa2842/license.txt"
 
-if [ $USE_FIELDMAPS = 0 ]; then
+if [ "$USE_FIELDMAPS" = 0 ]; then
     FMRIPREP_CMD+=" --ignore fieldmaps"
+fi
+
+if [ "$USE_FS_NO_RECONALL" = 1 ]; then
+    FMRIPREP_CMD+=" --fs-no-reconall"
 fi
 
 echo $FMRIPREP_CMD
