@@ -9,16 +9,16 @@
 #SBATCH --mail-user=aryan.agarwal@yale.edu
 
 sub_num=$1
-sub="pp02"
+sub="pp03"
 
 # Get the important variables and load FSL from the cluster
-DATA_DIR="/gpfs/milgram/scratch60/turk-browne/$2/sandbox"
+DATA_DIR="/gpfs/milgram/scratch60/turk-browne/$2/sandbox/auditory-object-scenes-data/preprocessed/"
 source "$FSLDIR/etc/fslconf/fsl.sh"
 module load FSL
 export FSLOUTPUTTYPE=NIFTI_GZ
 SUBJ_DIR="$DATA_DIR/sub-$sub"
 ANAT_DIR="$SUBJ_DIR/anat"
-T2_DIR="/gpfs/milgram/scratch60/turk-browne/$2/sandbox/bids/" # ADDED
+T2_DIR="/gpfs/milgram/scratch60/turk-browne/$2/sandbox/auditory-object-scenes-data/objects_scenes_bids/" # ADDED
 
 # Main directories for the variables, where MASK_DIRs are to store the T2 and T1 masks 
 ROI_DIR="$SUBJ_DIR/rois/ASHS_acq-2d_440um"

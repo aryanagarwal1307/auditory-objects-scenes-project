@@ -14,10 +14,11 @@ from nilearn.glm.first_level import make_first_level_design_matrix
 from nilearn.glm.first_level import FirstLevelModel
 from nilearn.interfaces.fmriprep import load_confounds
 from nilearn.plotting import plot_design_matrix
+from nilearn.glm import threshold_stats_img
 
 
 DEFAULT_BIDS_DIR = "/gpfs/milgram/scratch60/turk-browne/aa2842/sandbox/auditory-object-scenes-data/objects_scenes_bids"
-DEFAULT_PREPROC_DIR = "/gpfs/milgram/scratch60/turk-browne/aa2842/sandbox/auditory-object-scenes-data/objects_scenes_bids/derivatives"
+DEFAULT_PREPROC_DIR = "/gpfs/milgram/scratch60/turk-browne/aa2842/sandbox/auditory-object-scenes-data/preprocessed_old_no_recon"
 DEFAULT_SAVE_DIR = "/gpfs/milgram/project/turk-browne/aa2842/auditory-objects-scenes-project/GLM/results"
 
 
@@ -353,15 +354,10 @@ def make_contrasts(design_matrix):
 
 
 # Function to save condition maps and contrast maps
-def save_contrast_maps(fmri_glm, contrasts, save_dir, sub_bids, task, space):
+def save_contrast_maps(fmri_glm, contrasts, save_dir, sub_bids, task, space, fdr_alpha=0.05):
     """
-    :param fmri_glm: Fitted FirstLevelModel
-    :param contrasts: Dictionary of contrast vectors
-    :param save_dir: Output directory
-    :param sub_bids: BIDS subject label with sub- prefix
-    :param task: Task name
-    :param space: Modeled fMRIPrep output space
-    :return: List of saved file paths
+    Save unthresholded effect-size maps, unthresholded z-maps,
+    and FDR-thresholded z-maps.
     """
 
     saved_paths = []
@@ -375,23 +371,62 @@ def save_contrast_maps(fmri_glm, contrasts, save_dir, sub_bids, task, space):
         map_dir = os.path.join(save_dir, "first_level_glm", sub_bids, map_type, contrast_id)
         os.makedirs(map_dir, exist_ok=True)
 
-        for output_type in ["effect_size", "z_score"]:
-            result_map = fmri_glm.compute_contrast(contrast_val, output_type=output_type)
-            final_path = os.path.join(
-                map_dir,
-                f"{sub_bids}_task-{task}_{map_type}-{contrast_id}_space-{space}_stat-{output_type}.nii.gz"
-            )
+        # 1. Save effect-size map
+        effect_map = fmri_glm.compute_contrast(contrast_val, output_type="effect_size")
+        effect_path = os.path.join(
+            map_dir,
+            f"{sub_bids}_task-{task}_{map_type}-{contrast_id}_space-{space}_stat-effect_size.nii.gz"
+        )
+        effect_map.to_filename(effect_path)
+        saved_paths.append(effect_path)
+        print(f"Saved effect_size map for {contrast_id}: {effect_path}", flush=True)
 
-            result_map.to_filename(final_path)
-            saved_paths.append(final_path)
+        # 2. Save unthresholded z-map
+        z_map = fmri_glm.compute_contrast(contrast_val, output_type="z_score")
+        z_path = os.path.join(
+            map_dir,
+            f"{sub_bids}_task-{task}_{map_type}-{contrast_id}_space-{space}_stat-z_score.nii.gz"
+        )
+        z_map.to_filename(z_path)
+        saved_paths.append(z_path)
+        print(f"Saved z_score map for {contrast_id}: {z_path}", flush=True)
 
-            print(f"Saved {output_type} map for {contrast_id}: {final_path}", flush=True)
+        # 3. Save FDR-thresholded z-map
+        fdr_map, fdr_threshold = threshold_stats_img(
+            z_map,
+            alpha=fdr_alpha,
+            height_control="fdr"
+        )
+
+        fdr_path = os.path.join(
+            map_dir,
+            f"{sub_bids}_task-{task}_{map_type}-{contrast_id}_space-{space}_stat-z_score_desc-fdr_alpha-0p05.nii.gz"
+        )
+        fdr_map.to_filename(fdr_path)
+        saved_paths.append(fdr_path)
+
+        threshold_path = os.path.join(
+            map_dir,
+            f"{sub_bids}_task-{task}_{map_type}-{contrast_id}_space-{space}_stat-z_score_desc-fdr_alpha-0p05_threshold.txt"
+        )
+        with open(threshold_path, "w") as f:
+            f.write(str(fdr_threshold))
+
+        saved_paths.append(threshold_path)
+
+        print(
+            f"Saved FDR-thresholded z-map for {contrast_id}: {fdr_path}",
+            flush=True
+        )
+        print(
+            f"FDR alpha={fdr_alpha}, z-threshold={fdr_threshold}",
+            flush=True
+        )
 
     return saved_paths
 
-
 # Function to run the visual localizer GLM analysis for one subject
-def run_glm_analysis(bids_dir, preproc_dir, sub, save_dir, task="vislocalizer", space="T1w", dry_run=False):
+def run_glm_analysis(bids_dir, preproc_dir, sub, save_dir, task="vislocalizer", space="T1w", dry_run=False, threshold=0.05):
 
     # Find the visual localizer run and all matching files
     visual_run = find_visual_run(bids_dir, preproc_dir, sub, task=task, space=space)
@@ -423,7 +458,7 @@ def run_glm_analysis(bids_dir, preproc_dir, sub, save_dir, task="vislocalizer", 
     fmri_glm = fit_subject_glm(bold_img, design_matrix, visual_run["mask_path"], sample_mask=sample_mask)
 
     # Save effect size and z-score maps
-    save_contrast_maps(fmri_glm, contrasts, save_dir, visual_run["subject_bids"], visual_run["task"], visual_run["space"])
+    save_contrast_maps(fmri_glm, contrasts, save_dir, visual_run["subject_bids"], visual_run["task"], visual_run["space"], threshold)
 
     print(f"Successfully completed visual localizer GLM for subject: {visual_run['subject_bids']}", flush=True)
 
@@ -440,6 +475,7 @@ if __name__ == "__main__":
     parser.add_argument("--task", type=str, default="vislocalizer")
     parser.add_argument("--space", type=str, default="T1w")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--threshold", default=0.05)
 
     args = parser.parse_args()
     given_sub = args.subject
@@ -451,5 +487,6 @@ if __name__ == "__main__":
         args.save_dir,
         task=args.task,
         space=args.space,
-        dry_run=args.dry_run
+        dry_run=args.dry_run,
+        threshold=args.threshold
     )
