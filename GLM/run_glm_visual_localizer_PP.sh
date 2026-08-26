@@ -11,7 +11,7 @@
 module load miniconda
 conda activate "/gpfs/milgram/project/turk-browne/$1/conda_envs/myenv"
 
-SUBJECTS=("pp03")
+SUBJECTS=("pp06")
 
 SUBJECT_ID=${SUBJECTS[$SLURM_ARRAY_TASK_ID - 1]}
 

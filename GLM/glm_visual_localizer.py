@@ -18,8 +18,17 @@ from nilearn.glm import threshold_stats_img
 
 
 DEFAULT_BIDS_DIR = "/gpfs/milgram/scratch60/turk-browne/aa2842/sandbox/auditory-object-scenes-data/objects_scenes_bids"
-DEFAULT_PREPROC_DIR = "/gpfs/milgram/scratch60/turk-browne/aa2842/sandbox/auditory-object-scenes-data/preprocessed_old_no_recon"
+DEFAULT_PREPROC_DIR = "/gpfs/milgram/scratch60/turk-browne/aa2842/sandbox/auditory-object-scenes-data/preprocessed"
 DEFAULT_SAVE_DIR = "/gpfs/milgram/project/turk-browne/aa2842/auditory-objects-scenes-project/GLM/results"
+DEFAULT_PP03_EVENTS_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "sub-pp03_task-vislocalizer_events_three_conditions.tsv"
+)
+VISUAL_CONDITIONS = (
+    "visual_object",
+    "visual_scene",
+    "visual_scrambled_scene"
+)
 
 
 # Helper to standardize subject strings for this project
@@ -50,13 +59,21 @@ def get_bids_entities(path):
 
 
 # Function to find the single visual localizer run and its matching files
-def find_visual_run(bids_dir, preproc_dir, sub, task="vislocalizer", space="T1w"):
+def find_visual_run(
+    bids_dir,
+    preproc_dir,
+    sub,
+    task="vislocalizer",
+    space="T1w",
+    events_file=None
+):
     """
     :param bids_dir: String path to raw BIDS data
     :param preproc_dir: String path to fMRIPrep derivatives
     :param sub: String subject ID, e.g. "pp03"
     :param task: String task label in the BIDS/fMRIPrep filenames
     :param space: String fMRIPrep output space to model
+    :param events_file: Optional events TSV override
     :return: Dictionary with BOLD/events/mask/confounds paths and BIDS entities
     """
 
@@ -83,21 +100,38 @@ def find_visual_run(bids_dir, preproc_dir, sub, task="vislocalizer", space="T1w"
     bold_entities = get_bids_entities(bold_path)
     run_label = bold_entities.get("run", None)
 
-    events_pattern = os.path.join(bids_func_dir, f"{sub_bids}_task-{task}*_events.tsv")
-    events_paths = sorted(glob.glob(events_pattern))
+    if events_file is not None:
+        events_path = os.path.abspath(os.path.expanduser(events_file))
+        if not os.path.isfile(events_path):
+            raise FileNotFoundError(f"Could not find events override file: {events_path}")
 
-    if run_label is not None:
-        events_paths = [p for p in events_paths if f"_run-{run_label}_" in os.path.basename(p)]
+        events_entities = get_bids_entities(events_path)
+        if events_entities.get("sub") not in (None, sub):
+            raise ValueError(
+                f"Events override is for sub-{events_entities['sub']}, not {sub_bids}: "
+                f"{events_path}"
+            )
+        if events_entities.get("task") not in (None, task):
+            raise ValueError(
+                f"Events override is for task-{events_entities['task']}, not task-{task}: "
+                f"{events_path}"
+            )
     else:
-        events_no_run = [p for p in events_paths if "_run-" not in os.path.basename(p)]
-        events_paths = events_no_run
+        events_pattern = os.path.join(bids_func_dir, f"{sub_bids}_task-{task}*_events.tsv")
+        events_paths = sorted(glob.glob(events_pattern))
 
-    if len(events_paths) == 0:
-        raise FileNotFoundError(f"Could not find matching events file with pattern: {events_pattern}")
-    if len(events_paths) > 1:
-        raise ValueError(f"Found more than one matching visual localizer events file: {events_paths}")
+        if run_label is not None:
+            events_paths = [p for p in events_paths if f"_run-{run_label}_" in os.path.basename(p)]
+        else:
+            events_no_run = [p for p in events_paths if "_run-" not in os.path.basename(p)]
+            events_paths = events_no_run
 
-    events_path = events_paths[0]
+        if len(events_paths) == 0:
+            raise FileNotFoundError(f"Could not find matching events file with pattern: {events_pattern}")
+        if len(events_paths) > 1:
+            raise ValueError(f"Found more than one matching visual localizer events file: {events_paths}")
+
+        events_path = events_paths[0]
     bold_prefix = os.path.basename(bold_path).split(f"_space-{space}_desc-preproc_bold.nii.gz")[0]
     mask_path = os.path.join(func_dir, f"{bold_prefix}_space-{space}_desc-brain_mask.nii.gz")
     confounds_path = os.path.join(func_dir, f"{bold_prefix}_desc-confounds_timeseries.tsv")
@@ -156,7 +190,14 @@ def clean_visual_label(label):
         "scene": "visual_scene",
         "scenes": "visual_scene",
         "visual_scene": "visual_scene",
-        "visual scenes": "visual_scene"
+        "visual scenes": "visual_scene",
+        "scrambled_scene": "visual_scrambled_scene",
+        "scrambled scene": "visual_scrambled_scene",
+        "scrambled scenes": "visual_scrambled_scene",
+        "phase_scrambled_scene": "visual_scrambled_scene",
+        "phase scrambled scene": "visual_scrambled_scene",
+        "visual_scrambled_scene": "visual_scrambled_scene",
+        "visual scrambled scene": "visual_scrambled_scene"
     }
 
     return label_map.get(label, original)
@@ -166,7 +207,7 @@ def clean_visual_label(label):
 def load_and_clean_events(events_path):
     """
     :param events_path: String path to visual localizer BIDS events.tsv
-    :return: Cleaned events dataframe with trial_type set to visual_object/visual_scene
+    :return: Cleaned events dataframe with one of the three visual condition labels
     """
 
     events = pd.read_csv(events_path, sep="\t")
@@ -179,10 +220,16 @@ def load_and_clean_events(events_path):
     original_labels = sorted(events["trial_type"].dropna().astype(str).unique().tolist())
     events = events.copy()
     events["trial_type"] = events["trial_type"].apply(clean_visual_label)
-    events = events[events["trial_type"].isin(["visual_object", "visual_scene"])].copy()
+    events = events[events["trial_type"].isin(VISUAL_CONDITIONS)].copy()
 
     if events.empty:
-        raise ValueError(f"No visual_object or visual_scene events found after mapping labels: {original_labels}")
+        raise ValueError(
+            f"No recognized visual events found after mapping labels: {original_labels}"
+        )
+
+    missing_conditions = sorted(set(VISUAL_CONDITIONS) - set(events["trial_type"]))
+    if missing_conditions:
+        raise ValueError(f"Events file is missing visual conditions: {missing_conditions}")
 
     events["onset"] = pd.to_numeric(events["onset"])
     events["duration"] = pd.to_numeric(events["duration"])
@@ -337,15 +384,32 @@ def make_contrasts(design_matrix):
     contrast_matrix = np.eye(design_matrix.shape[1])
     basic_contrasts = {column: contrast_matrix[i] for i, column in enumerate(design_matrix.columns)}
 
-    for condition in ["visual_object", "visual_scene"]:
+    for condition in VISUAL_CONDITIONS:
         if condition not in basic_contrasts:
             raise ValueError(f"Condition is missing from the design matrix: {condition}")
 
     contrasts = {
         "visual_object": basic_contrasts["visual_object"],
         "visual_scene": basic_contrasts["visual_scene"],
-        "visual_object-visual_scene": basic_contrasts["visual_object"] - basic_contrasts["visual_scene"],
-        "visual_scene-visual_object": basic_contrasts["visual_scene"] - basic_contrasts["visual_object"]
+        "visual_scrambled_scene": basic_contrasts["visual_scrambled_scene"],
+        "visual_object-visual_scene": (
+            basic_contrasts["visual_object"] - basic_contrasts["visual_scene"]
+        ),
+        "visual_scene-visual_object": (
+            basic_contrasts["visual_scene"] - basic_contrasts["visual_object"]
+        ),
+        "visual_scrambled_scene-visual_scene": (
+            basic_contrasts["visual_scrambled_scene"] - basic_contrasts["visual_scene"]
+        ),
+        "visual_scene-visual_scrambled_scene": (
+            basic_contrasts["visual_scene"] - basic_contrasts["visual_scrambled_scene"]
+        ),
+        "visual_scrambled_scene-visual_object": (
+            basic_contrasts["visual_scrambled_scene"] - basic_contrasts["visual_object"]
+        ),
+        "visual_object-visual_scrambled_scene": (
+            basic_contrasts["visual_object"] - basic_contrasts["visual_scrambled_scene"]
+        )
     }
 
     print(f"Contrasts to compute: {list(contrasts.keys())}", flush=True)
@@ -363,7 +427,7 @@ def save_contrast_maps(fmri_glm, contrasts, save_dir, sub_bids, task, space, fdr
     saved_paths = []
 
     for contrast_id, contrast_val in contrasts.items():
-        if contrast_id in ["visual_object", "visual_scene"]:
+        if contrast_id in VISUAL_CONDITIONS:
             map_type = "condition"
         else:
             map_type = "contrast"
@@ -426,12 +490,34 @@ def save_contrast_maps(fmri_glm, contrasts, save_dir, sub_bids, task, space, fdr
     return saved_paths
 
 # Function to run the visual localizer GLM analysis for one subject
-def run_glm_analysis(bids_dir, preproc_dir, sub, save_dir, task="vislocalizer", space="T1w", dry_run=False, threshold=0.05):
+def run_glm_analysis(
+    bids_dir,
+    preproc_dir,
+    sub,
+    save_dir,
+    task="vislocalizer",
+    space="T1w",
+    events_file=None,
+    dry_run=False,
+    threshold=0.05
+):
+
+    normalized_sub = format_subject(sub)
+    if events_file is None and normalized_sub == "pp03":
+        events_file = DEFAULT_PP03_EVENTS_FILE
+        print(f"Using pp03 three-condition events override: {events_file}", flush=True)
 
     # Find the visual localizer run and all matching files
-    visual_run = find_visual_run(bids_dir, preproc_dir, sub, task=task, space=space)
+    visual_run = find_visual_run(
+        bids_dir,
+        preproc_dir,
+        normalized_sub,
+        task=task,
+        space=space,
+        events_file=events_file
+    )
 
-    # Load and clean visual object / visual scene events
+    # Load and clean visual object / scene / scrambled-scene events
     events = load_and_clean_events(visual_run["events_path"])
 
     # Load BOLD and frame timing
@@ -474,8 +560,14 @@ if __name__ == "__main__":
     parser.add_argument("--save_dir", type=str, default=DEFAULT_SAVE_DIR)
     parser.add_argument("--task", type=str, default="vislocalizer")
     parser.add_argument("--space", type=str, default="T1w")
+    parser.add_argument(
+        "--events-file",
+        type=str,
+        default=None,
+        help="Optional events TSV override (pp03 defaults to the GLM-local three-condition file)"
+    )
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--threshold", default=0.05)
+    parser.add_argument("--threshold", type=float, default=0.05)
 
     args = parser.parse_args()
     given_sub = args.subject
@@ -487,6 +579,7 @@ if __name__ == "__main__":
         args.save_dir,
         task=args.task,
         space=args.space,
+        events_file=args.events_file,
         dry_run=args.dry_run,
         threshold=args.threshold
     )

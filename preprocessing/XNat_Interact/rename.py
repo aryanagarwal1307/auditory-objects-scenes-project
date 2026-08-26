@@ -24,16 +24,79 @@ def find_files(directory):
     return files
 
 
+def matlab_value_to_string(value):
+    """Convert a scalar MATLAB cell/string value to a plain Python string."""
+    while isinstance(value, np.ndarray):
+        if value.size != 1:
+            if value.dtype.kind in {"U", "S"}:
+                return "".join(value.ravel().astype(str))
+            raise ValueError(f"Expected one MATLAB string value, got shape {value.shape}")
+        value = value.reshape(-1)[0]
+
+    return str(value)
+
+
+def classify_visual_stimulus(stimulus_path):
+    """Map a visual stimulus filename to its block-level GLM condition."""
+    stimulus_path = matlab_value_to_string(stimulus_path).strip().replace("\\", "/")
+    path_lower = stimulus_path.lower()
+    filename_upper = stimulus_path.rsplit("/", 1)[-1].upper()
+
+    if "/objects/" in path_lower:
+        return "visual_object"
+    if "/scenes/" in path_lower and filename_upper.startswith("S_"):
+        return "visual_scene"
+    if "/scenes/" in path_lower and filename_upper.startswith("C_"):
+        return "visual_scrambled_scene"
+
+    raise ValueError(f"Could not classify visual stimulus: {stimulus_path}")
+
+
+def visual_block_conditions(stimulus_sequence, number_of_blocks):
+    """Derive one condition per block from the ordered stimulus sequence."""
+    stimulus_sequence = list(stimulus_sequence)
+
+    if number_of_blocks <= 0:
+        raise ValueError("Visual events file does not contain any blocks")
+    if len(stimulus_sequence) % number_of_blocks != 0:
+        raise ValueError(
+            f"Cannot divide {len(stimulus_sequence)} visual stimuli into "
+            f"{number_of_blocks} blocks"
+        )
+
+    stimuli_per_block = len(stimulus_sequence) // number_of_blocks
+    conditions = []
+
+    for block_index in range(number_of_blocks):
+        start = block_index * stimuli_per_block
+        block_stimuli = stimulus_sequence[start:start + stimuli_per_block]
+        block_conditions = {classify_visual_stimulus(value) for value in block_stimuli}
+
+        if len(block_conditions) != 1:
+            raise ValueError(
+                f"Visual block {block_index + 1} contains multiple conditions: "
+                f"{sorted(block_conditions)}"
+            )
+
+        conditions.append(block_conditions.pop())
+
+    return np.asarray(conditions, dtype=object)
+
+
 # Helper function to transform .mat files to TSV files
 def transform_mat_to_tsv(path_to_events_file, directory, execute, verbose):
     print(path_to_events_file)
+    events_name = os.path.basename(path_to_events_file).lower()
+    is_visual = 'visual' in events_name or 'vislocalizer' in events_name
+    is_auditory = 'auditory' in events_name or 'audlocalizer' in events_name
+
     # read data from nested .mat structure
-    if 'visual' in path_to_events_file:
+    if is_visual:
         events = loadmat(file_name=path_to_events_file)
         onset = events['data']['blockOnset'][0][0]
         duration = events['data']['blockDurations'][0][0]
-        stimulus_name = events['data']['blockCondition'][0][0]
-    elif 'auditory' in path_to_events_file:
+        stimulus_sequence = events['data']['stimulus_sequence'][0][0]
+    elif is_auditory:
         events = loadmat(file_name=path_to_events_file)
         onset = events['data']['Onsets'][0][0]
         duration = events['data']['Durations'][0][0]
@@ -44,7 +107,17 @@ def transform_mat_to_tsv(path_to_events_file, directory, execute, verbose):
     # convert values to arrays
     onset = np.concatenate(onset).ravel()
     duration = np.concatenate(duration).ravel()
-    stimulus_name = np.concatenate(stimulus_name).ravel()
+    if is_visual:
+        stimulus_sequence = np.concatenate(stimulus_sequence).ravel()
+        stimulus_name = visual_block_conditions(stimulus_sequence, len(onset))
+    else:
+        stimulus_name = np.concatenate(stimulus_name).ravel()
+
+    if not (len(onset) == len(duration) == len(stimulus_name)):
+        raise ValueError(
+            "Events onset, duration, and trial_type arrays do not have matching lengths: "
+            f"{len(onset)}, {len(duration)}, {len(stimulus_name)}"
+        )
 
     # create panda with columns onset duration and stimulus name
     events_panda = pd.DataFrame({'onset': onset, 'duration': duration, 'trial_type': stimulus_name})
@@ -195,9 +268,13 @@ def format_json(subject_id, bids_dir, verbose):
     path_anat = bids_dir + "/sub-" + subject_id + "/anat"
     fmap_1 = bids_dir + "/sub-" + subject_id + "/fmap/" + "sub-" + subject_id + "_dir-AP_epi.json"
     fmap_2 = bids_dir + "/sub-" + subject_id + "/fmap/" + "sub-" + subject_id + "_dir-PA_epi.json"
+    fieldmaps_exist = os.path.exists(fmap_1) and os.path.exists(fmap_2)
+
+    if not fieldmaps_exist and verbose:
+        print("Fieldmap JSONs not found; skipping fieldmap formatting")
 
     for file in os.listdir(path_func):
-        if file.endswith(".nii"):
+        if file.endswith(".nii") and fieldmaps_exist:
             # Edit the first fieldmap JSON. Add IntendedFor and delete repetition time
             with open(fmap_1, 'r') as json_file_1:
                 json_data_1 = json.load(json_file_1)
@@ -349,6 +426,3 @@ if __name__ == "__main__":
     if execute: format_events(subject_id, bids_dir, descriptions, levels_dict, execute, verbose)
 
     print("Completed renaming and moving to BIDS directory")
-
-
-
