@@ -8,3 +8,4 @@ results/
 preprocessing/ASHS/logs/
 preprocessing/XNat_Interact/logs/
 preprocessing/XNat_Interact/renaming_log_*.log
+__pycache__
